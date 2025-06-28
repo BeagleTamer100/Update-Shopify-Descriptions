@@ -42,15 +42,23 @@ class Product:
     sillage: str = ""
     season: str = ""
     occasion: str = ""
+    # New fields for AI shopping optimization
+    gtin: str = ""  # GTIN/UPC/EAN for product identification
+    weight: str = ""  # Product weight
+    height: str = ""  # Product height
+    width: str = ""   # Product width
+    depth: str = ""   # Product depth
+    synonyms: str = ""  # Related keywords and synonyms
 
 class OpenAIEnhancedUpdater:
-    def __init__(self, csv_file_path: str, openai_api_key: str):
+    def __init__(self, csv_file_path: str, openai_api_key: str, max_products: int = None):
         self.csv_file_path = csv_file_path
         self.products = []  # List[Product]
         self.updated_products = {}  # Dict[handle, updated_html]
         self.openai_client = openai.OpenAI(api_key=openai_api_key)
         self.processed_handles = set()  # To avoid duplicate API calls
         self.progress_file = f"{csv_file_path}_progress.pkl"
+        self.max_products = max_products  # Limit for processing
         
         # Initialize session for web scraping
         self.session = requests.Session()
@@ -95,6 +103,15 @@ class OpenAIEnhancedUpdater:
                 self.updated_products = progress_data.get('updated_products', {})
                 self.processed_handles = set(progress_data.get('processed_handles', []))
                 print(f"Loaded existing progress: {len(self.updated_products)} products already processed")
+                print(f"Progress file: {self.progress_file}")
+                if self.updated_products:
+                    print("Previously processed products:")
+                    for i, handle in enumerate(list(self.updated_products.keys())[:5]):  # Show first 5
+                        print(f"  {i+1}. {handle}")
+                    if len(self.updated_products) > 5:
+                        print(f"  ... and {len(self.updated_products) - 5} more")
+            else:
+                print("No existing progress file found. Starting fresh.")
         except Exception as e:
             print(f"Error loading progress: {e}")
     
@@ -136,7 +153,13 @@ class OpenAIEnhancedUpdater:
                         longevity=row.get('Longevity', ''),
                         sillage=row.get('Sillage', ''),
                         season=row.get('Season (product.metafields.shopify.season)', ''),
-                        occasion=row.get('Occasion (product.metafields.shopify.occasion)', '')
+                        occasion=row.get('Occasion (product.metafields.shopify.occasion)', ''),
+                        gtin=row.get('GTIN', ''),
+                        weight=row.get('Weight', ''),
+                        height=row.get('Height', ''),
+                        width=row.get('Width', ''),
+                        depth=row.get('Depth', ''),
+                        synonyms=row.get('Synonyms', '')
                     )
                     self.products.append(product)
                     self.processed_handles.add(handle)
@@ -183,6 +206,8 @@ Please provide:
 6. 5 frequently asked questions with detailed answers
 7. Community insights and popular opinions
 8. How to use and apply this fragrance
+9. Product specifications including typical dimensions and weight
+10. Related keywords and synonyms for better search matching
 
 Format as JSON with these keys:
 - fragrance_notes (object with top_notes, middle_notes, base_notes arrays)
@@ -199,6 +224,9 @@ Format as JSON with these keys:
 - fragrantica (array of objects with review, upvotes, author, url, type)
 - comparisons (array of objects with comparison, upvotes, author, url, type)
 - unique_features (string)
+- specifications (object with weight, height, width, depth as strings with units)
+- synonyms (array of related keywords and search terms)
+- gtin_info (string - if you can find GTIN/UPC/EAN, otherwise leave empty)
 """
             else:
                 prompt = f"""
@@ -218,7 +246,8 @@ Please provide:
 4. Key benefits and unique selling points
 5. 5 frequently asked questions with detailed answers
 6. Common use cases and applications
-7. Product specifications and details
+7. Product specifications and details including dimensions and weight
+8. Related keywords and synonyms for better search matching
 
 Format as JSON with these keys:
 - features (array)
@@ -227,14 +256,16 @@ Format as JSON with these keys:
 - target_audience (array)
 - faqs (array of objects with question and answer)
 - use_cases (array)
-- specifications (string)
+- specifications (object with weight, height, width, depth as strings with units)
 - unique_features (string)
+- synonyms (array of related keywords and search terms)
+- gtin_info (string - if you can find GTIN/UPC/EAN, otherwise leave empty)
 """
 
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-2024-11-20",  # Latest free tier model - best for product descriptions
                 messages=[
-                    {"role": "system", "content": "You are a product research expert specializing in e-commerce and AI search optimization. You want to provide helpful accurate information to the consumer. Provide accurate, detailed information in JSON format."},
+                    {"role": "system", "content": "You are a product research expert specializing in e-commerce and AI search optimization. You want to provide helpful accurate information to the consumer. Provide accurate, detailed information in JSON format. Include product specifications with proper units (oz, ml, in, cm, etc.) and related keywords for better search matching."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
@@ -259,6 +290,21 @@ Format as JSON with these keys:
         try:
             current_desc = self.extract_text_description(product.body_html)
             
+            # Extract specifications and synonyms from research data
+            specs = research_data.get('specifications', {})
+            if isinstance(specs, str):
+                specs = {}
+            synonyms = research_data.get('synonyms', [])
+            gtin_info = research_data.get('gtin_info', '')
+            
+            # Use product data if available, otherwise use research data
+            weight = product.weight or specs.get('weight', '')
+            height = product.height or specs.get('height', '')
+            width = product.width or specs.get('width', '')
+            depth = product.depth or specs.get('depth', '')
+            gtin = product.gtin or gtin_info
+            product_synonyms = product.synonyms or ', '.join(synonyms) if synonyms else ''
+            
             if self.is_perfume(product):
                 prompt = f"""
 You are creating a product description for {product.title}. You MUST use the research data and community data provided below to fill in the sections.
@@ -278,7 +324,7 @@ Create the description in this EXACT format, filling in the brackets with real d
 <div class="product-description">
     <h2>{product.title}</h2>
     
-    <p><strong>Spiritual. Smoky. Sacred.</strong> [Write a compelling opening paragraph using the research data]</p>
+    <p><strong>Spiritual. Smoky. Sacred.</strong> [Write a compelling opening paragraph using the research data - keep it to 2-3 sentences maximum]</p>
 
     <h3>Fragrance Notes</h3>
     <ul>
@@ -304,7 +350,7 @@ Create the description in this EXACT format, filling in the brackets with real d
     </ul>
 
     <h3>Who It's For</h3>
-    <p>[Use the target_audience from research data to write this section]</p>
+    <p>[Use the target_audience from research data to write this section - break into 2-3 short paragraphs]</p>
 
     <h3>Product Features</h3>
     <ul>
@@ -313,7 +359,7 @@ Create the description in this EXACT format, filling in the brackets with real d
     </ul>
 
     <h3>How to Use</h3>
-    <p>[Use the usage_instructions from research data]</p>
+    <p>[Use the usage_instructions from research data - break into 2-3 short paragraphs]</p>
 
     <div class="schema-markup" style="display: none;">
         <script type="application/ld+json">
@@ -327,7 +373,14 @@ Create the description in this EXACT format, filling in the brackets with real d
             }},
             "description": "[extract key description from research data]",
             "sku": "{product.sku}",
+            "gtin": "{gtin}",
             "image": "{product.image_src}",
+            "weight": "{weight}",
+            "height": "{height}",
+            "width": "{width}",
+            "depth": "{depth}",
+            "category": "{product.product_category}",
+            "keywords": "{product_synonyms}",
             "offers": {{
                 "@type": "Offer",
                 "price": "{product.price}",
@@ -340,7 +393,7 @@ Create the description in this EXACT format, filling in the brackets with real d
     </div>
 </div>
 
-CRITICAL: You MUST replace the [bracketed text] with actual data from the JSON objects above. Do not leave brackets empty. If data is not available, write "Information not available" or skip that section entirely.
+CRITICAL: You MUST replace the [bracketed text] with actual data from the JSON objects above. Do not leave brackets empty. If data is not available, write "Information not available" or skip that section entirely. Break up large paragraphs into smaller, digestible chunks for better AI crawling.
 """
             else:
                 prompt = f"""
@@ -355,17 +408,17 @@ Research Data: {json.dumps(research_data, indent=2)}
 Community Data: {json.dumps(community_data, indent=2)}
 
 Create an HTML description that includes:
-1. Compelling product overview that starts with what the product does
-2. Key features and benefits section
-3. How to use section
-4. Target audience section
+1. Compelling product overview that starts with what the product does (2-3 short paragraphs)
+2. Key features and benefits section (broken into digestible chunks)
+3. How to use section (2-3 short paragraphs)
+4. Target audience section (2-3 short paragraphs)
 5. FAQ section with the provided questions and answers
 6. Use cases and applications
-7. Schema.org structured data markup (hidden)
+7. Enhanced Schema.org structured data markup (hidden) with GTIN, dimensions, and keywords
 
 Requirements:
 - Write in natural, conversational language like speaking to a curious shopper
-- Include Schema.org markup for Product, Offer, and AggregateRating
+- Include enhanced Schema.org markup with GTIN, dimensions, weight, and keywords
 - Make it descriptive and benefit-driven
 - Avoid keyword stuffing
 - Include unique use cases and key differentiators
@@ -373,6 +426,8 @@ Requirements:
 - Optimize for AI search and ChatGPT shopping visibility
 - Focus specifically on this product, not generic content
 - Do NOT use emojis or special characters
+- Break up large paragraphs into smaller, digestible chunks (2-3 sentences max per paragraph)
+- Include related keywords and synonyms naturally in the content
 
 Format the response as clean HTML with proper structure and styling.
 """
@@ -380,7 +435,7 @@ Format the response as clean HTML with proper structure and styling.
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-2024-11-20",  # Latest free tier model - best for product descriptions
                 messages=[
-                    {"role": "system", "content": "You are an expert e-commerce copywriter specializing in AI-optimized product descriptions. Create compelling, natural content that ranks well in AI search and appears in ChatGPT shopping. Always focus on the specific product provided. Do NOT use emojis or special characters - keep the content clean and professional."},
+                    {"role": "system", "content": "You are an expert e-commerce copywriter specializing in AI-optimized product descriptions. Create compelling, natural content that ranks well in AI search and appears in ChatGPT shopping. Always focus on the specific product provided. Do NOT use emojis or special characters - keep the content clean and professional. Break up large paragraphs into smaller, digestible chunks for better AI crawling."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.8,
@@ -442,7 +497,14 @@ Format the response as clean HTML with proper structure and styling.
             }},
             "description": "{current_desc[:200]}",
             "sku": "{product.sku}",
+            "gtin": "{product.gtin}",
             "image": "{product.image_src}",
+            "weight": "{product.weight}",
+            "height": "{product.height}",
+            "width": "{product.width}",
+            "depth": "{product.depth}",
+            "category": "{product.product_category}",
+            "keywords": "{product.synonyms}",
             "offers": {{
                 "@type": "Offer",
                 "price": "{product.price}",
@@ -461,8 +523,20 @@ Format the response as clean HTML with proper structure and styling.
         print("Updating product descriptions with OpenAI...")
         print(f"Starting with {len(self.updated_products)} products already processed")
         
-        for i, product in enumerate(self.products):
-            print(f"Processing {i+1}/{len(self.products)}: {product.title}")
+        # Calculate how many products we need to process
+        products_to_process = self.products
+        if self.max_products:
+            # Count how many we've already processed
+            already_processed = len(self.updated_products)
+            remaining_limit = self.max_products - already_processed
+            if remaining_limit <= 0:
+                print(f"Already processed {already_processed} products, which meets the limit of {self.max_products}")
+                return
+            products_to_process = self.products[:remaining_limit]
+            print(f"Processing first {len(products_to_process)} products (limit: {self.max_products})")
+        
+        for i, product in enumerate(products_to_process):
+            print(f"Processing {i+1}/{len(products_to_process)}: {product.title}")
             
             # Only process each handle once
             if product.handle in self.updated_products:
@@ -708,8 +782,55 @@ Format the response as clean HTML with proper structure and styling.
             print(f"  Error searching Reddit: {e}")
             return []
 
+    def show_progress_status(self):
+        """Display current progress status"""
+        total_processed = len(self.updated_products)
+        if self.max_products:
+            remaining = max(0, self.max_products - total_processed)
+            print(f"\n=== PROGRESS STATUS ===")
+            print(f"Products processed: {total_processed}")
+            print(f"Products remaining: {remaining}")
+            print(f"Total limit: {self.max_products}")
+            print(f"Progress file: {self.progress_file}")
+            if remaining == 0:
+                print("✓ All products in batch completed!")
+            print("=======================\n")
+        else:
+            print(f"\n=== PROGRESS STATUS ===")
+            print(f"Products processed: {total_processed}")
+            print(f"Progress file: {self.progress_file}")
+            print("=======================\n")
+
+    def reset_progress(self):
+        """Reset all progress and start fresh"""
+        try:
+            if os.path.exists(self.progress_file):
+                os.remove(self.progress_file)
+                print(f"Deleted progress file: {self.progress_file}")
+            self.updated_products = {}
+            self.processed_handles = set()
+            print("Progress reset successfully. Will start fresh on next run.")
+        except Exception as e:
+            print(f"Error resetting progress: {e}")
+
 def main():
     """Main function to run the OpenAI-enhanced product description updater"""
+    import sys
+    
+    # Check for reset flag
+    if len(sys.argv) > 1 and sys.argv[1] == "--reset":
+        print("Resetting progress...")
+        csv_file = "products_export_June_25_2025.csv"
+        openai_api_key = os.getenv("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY_HERE")
+        if openai_api_key == "YOUR_OPENAI_API_KEY_HERE":
+            print("Error: Please set your OpenAI API key as an environment variable:")
+            print("export OPENAI_API_KEY='your-api-key-here'")
+            return 1
+        
+        updater = OpenAIEnhancedUpdater(csv_file, openai_api_key, max_products=20)
+        updater.reset_progress()
+        return 0
+    
     csv_file = "products_export_June_25_2025.csv"
     output_file = "products_export_openai_enhanced.csv"
     
@@ -721,14 +842,23 @@ def main():
         print("export OPENAI_API_KEY='your-api-key-here'")
         return 1
     
-    updater = OpenAIEnhancedUpdater(csv_file, openai_api_key)
+    # Limit to first 50 products for testing (increased from 20)
+    max_products = 50
+    
+    updater = OpenAIEnhancedUpdater(csv_file, openai_api_key, max_products)
     
     try:
         # Read the CSV
         updater.read_csv()
         
+        # Show initial progress status
+        updater.show_progress_status()
+        
         # Update descriptions with OpenAI
         updater.update_product_descriptions()
+        
+        # Show final progress status
+        updater.show_progress_status()
         
         # Write updated CSV
         updater.write_updated_csv(output_file)
@@ -736,6 +866,7 @@ def main():
         print("OpenAI-enhanced product description update completed successfully!")
         print(f"Original file: {csv_file}")
         print(f"Updated file: {output_file}")
+        print(f"Processed {len(updater.updated_products)} products (limited to {max_products})")
         
     except Exception as e:
         print(f"Error: {e}")
